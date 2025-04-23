@@ -43,7 +43,8 @@ function main(context) {
 
     context.registerInstaller('schedule1-luamod', 25, testSupportedScheduleLuaContent, installScheduleLuaMod(context.api));
     context.registerInstaller('schedule1-luamod', 25, testSupportedLuaContent, installLuaMod(context.api));
-    context.registerInstaller('schedule1-pluginmod', 26, testSupportedPluginContent, installPluginMods(context.api));
+    context.registerInstaller('schedule1-luamod', 25, testSupportedS1APIContent, installS1APIMod(context.api));
+    context.registerInstaller('schedule1-pluginmod', 27, testSupportedPluginContent, installPluginMods(context.api));
 
     return true;
 }
@@ -59,6 +60,21 @@ async function testSupportedLuaContent(files, gameId) {
 
     return Promise.resolve({
         supported: hasLuaFile,
+        requiredFiles: [],
+    });
+}
+
+async function testSupportedS1APIContent(files, gameId) {
+    if (gameId !== GAME_ID) {
+        return Promise.resolve({ supported: false, requiredFiles: [] });
+    }
+
+    const hasScheduleLuaDll = files.some(file =>
+        path.basename(file).toLowerCase() === 's1apiloader.dll'
+    );
+
+    return Promise.resolve({
+        supported: hasScheduleLuaDll,
         requiredFiles: [],
     });
 }
@@ -93,6 +109,59 @@ async function testSupportedPluginContent(files, gameId) {
         supported: hasDll && !hasLoaderDll,
         requiredFiles: [],
     });
+}
+
+function installS1APIMod(api) {
+    return async (files, workingDir, gameId, progressDel, choices, unattended, archivePath) => {
+        const instructions = [];
+
+        for (const iter of files) {
+            try {
+                const stats = await fs.statAsync(path.join(workingDir, iter));
+                if (stats.isDirectory()) {
+                    continue; // Skip directories
+                }
+
+                const segments = iter.split(path.sep);
+                const lowerSegments = segments.map(seg => seg.toLowerCase());
+                const hasPlugins = lowerSegments.includes('plugins');
+
+                if (!hasPlugins) { // skip the file if the path doesn't have plugins
+                    continue;
+                }
+
+                const pluginsIdx = lowerSegments.indexOf('plugins');
+                const destination = segments.slice(pluginsIdx).join(path.sep);
+                
+                instructions.push({
+                    type: 'copy',
+                    source: iter,
+                    destination: path.join(destination),
+                });
+            } catch (e) {
+                api.sendNotification({
+                    id: 'schedule1-staterror',
+                    type: 'error',
+                    message: 'Error while reading stats for the mod file',
+                    allowSuppress: true,
+                    actions: [
+                        {
+                            title: 'More',
+                            action: dismiss => {
+                                api.showDialog('error', 'Error while reading stats for the mod file', {
+                                    bbcode: api.translate(`An error has occurred while reading stats for mod file:\n${iter}\n `
+                                        + `Error:\n${e}\n\nPlease report this to the extension developer.`)
+                                }, [
+                                    { label: 'Close', action: () => api.suppressNotification('schedule1-staterror') }
+                                ]);
+                            },
+                        },
+                    ],
+                });
+            }
+        }
+        return { instructions }; // async functions automatically wrap in Promise
+    };
 }
 
 function installLuaMod(api) {
