@@ -43,8 +43,8 @@ function main(context) {
 
     context.registerInstaller('schedule1-luamod', 25, testSupportedScheduleLuaContent, installScheduleLuaMod(context.api));
     context.registerInstaller('schedule1-luamod', 25, testSupportedLuaContent, installLuaMod(context.api));
-    context.registerInstaller('schedule1-luamod', 25, testSupportedS1APIContent, installS1APIMod(context.api));
-    context.registerInstaller('schedule1-pluginmod', 27, testSupportedPluginContent, installPluginMods(context.api));
+    context.registerInstaller('schedule1-s1apimod', 25, testSupportedS1APIContent, installS1APIMod(context.api));
+    context.registerInstaller('schedule1-pluginmod', 26, testSupportedPluginContent, installPluginMods(context.api));
 
     return true;
 }
