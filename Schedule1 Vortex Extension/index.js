@@ -111,32 +111,47 @@ async function testSupportedPluginContent(files, gameId) {
     });
 }
 
+/**
+ * Helper: canonicalize destination to expected root + original subpath.
+ * Example: if archive has "Mods/MyMod.dll" and idx points to "mods" element,
+ * buildDest('mods', ['Mods','MyMod.dll'], idx) => 'mods/MyMod.dll'
+ */
+function buildDest(root, segments, idx) {
+    // idx is index of the matched root in segments (lowerSegments index)
+    // we want canonical root + rest of segments after idx
+    const rest = segments.slice(idx + 1);
+    if (rest.length === 0) {
+        return path.join(root);
+    }
+    return path.join(root, ...rest);
+}
+
 function installS1APIMod(api) {
     return async (files, workingDir, gameId, progressDel, choices, unattended, archivePath) => {
         const instructions = [];
 
         for (const iter of files) {
             try {
-                const stats = await fs.statAsync(path.join(workingDir, iter));
+                const full = path.join(workingDir, iter);
+                const stats = await fs.statAsync(full);
                 if (stats.isDirectory()) {
                     continue; // Skip directories
                 }
 
                 const segments = iter.split(path.sep);
                 const lowerSegments = segments.map(seg => seg.toLowerCase());
-                const hasPlugins = lowerSegments.includes('plugins');
+                const pluginsIdx = lowerSegments.indexOf('plugins');
 
-                if (!hasPlugins) { // skip the file if the path doesn't have plugins
+                if (pluginsIdx === -1) { // skip the file if the path doesn't have plugins
                     continue;
                 }
 
-                const pluginsIdx = lowerSegments.indexOf('plugins');
-                const destination = segments.slice(pluginsIdx).join(path.sep);
-                
+                const destination = buildDest('plugins', segments, pluginsIdx);
+
                 instructions.push({
                     type: 'copy',
                     source: iter,
-                    destination: path.join(destination),
+                    destination: destination,
                 });
             } catch (e) {
                 api.sendNotification({
@@ -160,7 +175,7 @@ function installS1APIMod(api) {
                 });
             }
         }
-        return { instructions }; // async functions automatically wrap in Promise
+        return { instructions };
     };
 }
 
@@ -170,27 +185,23 @@ function installLuaMod(api) {
 
         for (const iter of files) {
             try {
-                const stats = await fs.statAsync(path.join(workingDir, iter));
+                const full = path.join(workingDir, iter);
+                const stats = await fs.statAsync(full);
                 if (stats.isDirectory()) {
                     continue; // Skip directories
                 }
 
-                const segments = iter.split(path.sep);
-                const isLuaFile = iter.toLowerCase().endsWith('.lua');
-
-                if (!isLuaFile)
+                const isLuaFile = path.extname(iter).toLowerCase() === '.lua';
+                if (!isLuaFile) {
                     continue;
-                else {
-                    const filename = path.basename(iter);
-                    instructions.push({
-                        type: 'copy',
-                        source: iter,
-                        destination: path.join(LUA_SCRIPT_RELPATH, filename),
-                        //destination: path.join(LUA_SCRIPT_RELPATH, segments.join(path.sep)),
-                    });
                 }
-                // Get just the filename (last segment of the path)
 
+                const filename = path.basename(iter);
+                instructions.push({
+                    type: 'copy',
+                    source: iter,
+                    destination: path.join(LUA_SCRIPT_RELPATH, filename),
+                });
             } catch (e) {
                 api.sendNotification({
                     id: 'schedule1-staterror',
@@ -213,7 +224,7 @@ function installLuaMod(api) {
                 });
             }
         }
-        return { instructions }; // async functions automatically wrap in Promise
+        return { instructions };
     };
 }
 
@@ -223,35 +234,35 @@ function installScheduleLuaMod(api) {
 
         for (const iter of files) {
             try {
-                const stats = await fs.statAsync(path.join(workingDir, iter));
+                const full = path.join(workingDir, iter);
+                const stats = await fs.statAsync(full);
                 if (stats.isDirectory()) {
                     continue; // Skip directories
                 }
 
                 const segments = iter.split(path.sep);
                 const lowerSegments = segments.map(seg => seg.toLowerCase());
-                const hasMods = lowerSegments.includes('mods');
-                const hasUserlibs = lowerSegments.includes('userlibs');
+                const modsIdx = lowerSegments.indexOf('mods');
+                const userlibsIdx = lowerSegments.indexOf('userlibs');
 
                 // Skip if the file is in the root (no 'mods' or 'userlibs' in path)
-                if (!hasMods && !hasUserlibs) {
+                if (modsIdx === -1 && userlibsIdx === -1) {
                     continue;
                 }
 
-                // Determine destination based on whether it's in 'mods' or 'userlibs'
                 let destination;
-                if (hasMods) {
-                    const modsIdx = lowerSegments.indexOf('mods');
-                    destination = segments.slice(modsIdx).join(path.sep);
-                } else if (hasUserlibs) {
-                    const userlibsIdx = lowerSegments.indexOf('userlibs');
-                    destination = segments.slice(userlibsIdx).join(path.sep);
+                if (modsIdx !== -1) {
+                    // Force canonical 'mods' root (lowercase) + rest of the path
+                    destination = buildDest('mods', segments, modsIdx);
+                } else {
+                    // userlibs -> map to 'userdata' (canonical for melon's userdata folder)
+                    destination = buildDest('userdata', segments, userlibsIdx);
                 }
 
                 instructions.push({
                     type: 'copy',
                     source: iter,
-                    destination: path.join(destination),
+                    destination: destination,
                 });
             } catch (e) {
                 api.sendNotification({
@@ -275,7 +286,7 @@ function installScheduleLuaMod(api) {
                 });
             }
         }
-        return { instructions }; // async functions automatically wrap in Promise
+        return { instructions };
     };
 }
 
@@ -290,6 +301,7 @@ function installPluginMods(api) {
         const state = api.getState();
         const discovery = selectors.discoveryByGame(state, GAME_ID);
 
+        // First pass: detect plugin types by reading DLL contents (same as before)
         await Promise.all(files.map(async file => {
             if (path.extname(file).toLowerCase() === '.dll') {
                 try {
@@ -326,6 +338,7 @@ function installPluginMods(api) {
             }
         }
 
+        // Check if the user has melonloader installed
         if (isMelonLoader) {
             try {
                 await fs.statAsync(path.join(discovery.path, 'MelonLoader', 'net6', 'MelonLoader.dll'));
@@ -349,6 +362,7 @@ function installPluginMods(api) {
             }
         }
 
+        // If both detected, bail out (same behavior you had)
         if (isBepInEx && isMelonLoader) {
             const mixedModHandling = await api.showDialog('error', 'Mixed mod detected', {
                 bbcode: api.translate('Vortex has detected that the mod package has bepinex and melonloader mod on the archive.[br][/br][br][/br]'
@@ -362,129 +376,124 @@ function installPluginMods(api) {
             }
         }
 
+        // Second pass: build instructions with case-insensitive detection and canonical destinations
         const instructions = [];
         for (const iter of files) {
             try {
-                const stats = await fs.statAsync(path.join(workingDir, iter));
+                const full = path.join(workingDir, iter);
+                const stats = await fs.statAsync(full);
                 if (stats.isDirectory()) {
                     continue;
                 }
 
                 const ext = path.extname(iter).toLowerCase();
                 const segments = iter.split(path.sep);
-                const bepinexIdx = segments.map(seg => seg.toLowerCase()).indexOf('bepinex');
-                const bepinexConfigIdx = segments.map(seg => seg.toLowerCase()).indexOf('config');
-                const bepinexPluginsIdx = segments.map(seg => seg.toLowerCase()).indexOf('plugins');
-                const bepinexPatchersIdx = segments.map(seg => seg.toLowerCase()).indexOf('patchers');
-                const melonloaderIdx = segments.map(seg => seg.toLowerCase()).indexOf('melonloader');
-                const melonloaderUserLibsIdx = segments.map(seg => seg.toLowerCase()).indexOf('userlibs');
-                const melonloaderConfigIdx = segments.map(seg => seg.toLowerCase()).indexOf('userdata');
+                const lowerSegments = segments.map(seg => seg.toLowerCase());
 
+                const bepinexIdx = lowerSegments.indexOf('bepinex');
+                const bepinexConfigIdx = lowerSegments.indexOf('config');
+                const bepinexPluginsIdx = lowerSegments.indexOf('plugins');
+                const bepinexPatchersIdx = lowerSegments.indexOf('patchers');
+                const melonloaderIdx = lowerSegments.indexOf('melonloader');
+                const melonloaderUserLibsIdx = lowerSegments.indexOf('userlibs');
+                const melonloaderConfigIdx = lowerSegments.indexOf('userdata');
+                const pluginsIdx = lowerSegments.indexOf('plugins');
+                const modsIdx = lowerSegments.indexOf('mods');
+
+                // Variant detection: record the prefix before the variant root (as before)
                 if (bepinexIdx !== -1) {
                     variantSet.add(segments.slice(0, bepinexIdx).join(path.sep));
-                    instructions.push({
-                        type: 'copy',
-                        source: iter,
-                        destination: path.join(destination, segments.slice(bepinexIdx).join(path.sep)),
-                    });
-                } else if (bepinexPluginsIdx !== -1) {
-                    const relPath = path.join(BEPINEX_PLUGINS_RELPATH, segments.slice(bepinexPluginsIdx + 1).join(path.sep));
-                    instructions.push({
-                        type: 'copy',
-                        source: iter,
-                        destination: path.join(destination, relPath),
-                    });
+                }
+                if (melonloaderIdx !== -1) {
+                    variantSet.add(segments.slice(0, melonloaderIdx).join(path.sep));
+                }
+
+                // Priority mapping:
+                let dest = null;
+
+                // Explicit bepinex plugin/patcher/config cases first
+                if (bepinexPluginsIdx !== -1) {
+                    dest = path.join(BEPINEX_RELPATH, 'plugins', ...segments.slice(bepinexPluginsIdx + 1));
                 } else if (bepinexPatchersIdx !== -1) {
-                    const relPath = path.join(BEPINEX_PATCHERS_RELPATH, segments.slice(bepinexPatchersIdx + 1).join(path.sep));
-                    instructions.push({
-                        type: 'copy',
-                        source: iter,
-                        destination: path.join(destination, relPath),
-                    });
-                } else if (bepinexConfigIdx !== -1) {
-                    const relPath = path.join(BEPINEX_CONFIG_RELPATH, segments.slice(bepinexConfigIdx + 1).join(path.sep));
-                    instructions.push({
-                        type: 'copy',
-                        source: iter,
-                        destination: path.join(destination, relPath),
-                    });
-                } else if (melonloaderIdx !== -1) {
-                    variantSet.add(segments.slice(0, melonloaderIdx).join(path.sep));
-                    instructions.push({
-                        type: 'copy',
-                        source: iter,
-                        destination: path.join(destination, segments.slice(melonloaderIdx).join(path.sep)),
-                    });
-                } else if (melonloaderUserLibsIdx !== -1) {
-                    variantSet.add(segments.slice(0, melonloaderIdx).join(path.sep));
-                    instructions.push({
-                        type: 'copy',
-                        source: iter,
-                        destination: path.join(destination, segments.slice(melonloaderUserLibsIdx).join(path.sep)),
-                    });
+                    dest = path.join(BEPINEX_RELPATH, 'patchers', ...segments.slice(bepinexPatchersIdx + 1));
+                } else if (bepinexConfigIdx !== -1 && bepinexIdx !== -1 && bepinexConfigIdx > bepinexIdx) {
+                    // e.g. .../BepInEx/config/...
+                    dest = path.join(BEPINEX_RELPATH, 'config', ...segments.slice(bepinexConfigIdx + 1));
+                } else if (bepinexIdx !== -1) {
+                    // any other file under a BepInEx root
+                    dest = path.join(BEPINEX_RELPATH, ...segments.slice(bepinexIdx + 1));
+                }
+                // MelonLoader specific
+                else if (melonloaderUserLibsIdx !== -1) {
+                    // If archive contains 'userlibs', put under MelonLoader/<rest>
+                    dest = path.join(MELONLOADER_RELPATH, ...segments.slice(melonloaderUserLibsIdx + 1));
                 } else if (melonloaderConfigIdx !== -1) {
-                    const relPath = path.join(MELONLOADER_CONFIG_RELPATH, segments.slice(melonloaderConfigIdx + 1).join(path.sep));
-                    instructions.push({
-                        type: 'copy',
-                        source: iter,
-                        destination: path.join(destination, relPath),
-                    });
-                } else if (ext === '.dll') {
-                    let relPath = '';
-                    const dllSegments = iter.split(path.sep);
+                    // userdata -> canonical userdata folder
+                    dest = path.join(MELONLOADER_CONFIG_RELPATH, ...segments.slice(melonloaderConfigIdx + 1));
+                } else if (melonloaderIdx !== -1) {
+                    dest = path.join(MELONLOADER_RELPATH, ...segments.slice(melonloaderIdx + 1));
+                }
+                // Generic plugins/mods detection (non-bepinex/melonloader)
+                else if (pluginsIdx !== -1) {
+                    dest = buildDest('plugins', segments, pluginsIdx);
+                } else if (modsIdx !== -1) {
+                    dest = buildDest('mods', segments, modsIdx);
+                }
 
+                // If still no dest, handle DLLs specially based on detected loader
+                if (!dest && ext === '.dll') {
                     if (isBepInEx) {
-                        relPath = isBepInExPatcher
-                            ? path.join(BEPINEX_PATCHERS_RELPATH, dllSegments.slice(-2).join(path.sep))
-                            : path.join(BEPINEX_PLUGINS_RELPATH, dllSegments.slice(-2).join(path.sep));
+                        // put in bepinex plugins/patchers depending on detection
+                        if (isBepInExPatcher) {
+                            // keep last two path parts if present (folder + dll)
+                            const dllSegments = segments.slice(-2);
+                            dest = path.join(BEPINEX_PATCHERS_RELPATH, ...dllSegments);
+                        } else {
+                            const dllSegments = segments.slice(-2);
+                            dest = path.join(BEPINEX_PLUGINS_RELPATH, ...dllSegments);
+                        }
                     } else if (isMelonLoader) {
-                        relPath = isMelonLoaderPlugins
-                            ? path.join(MELONLOADER_PLUGINS_RELPATH, path.basename(iter))
-                            : path.join(MELONLOADER_MODS_RELPATH, path.basename(iter));
-                    }
-
-                    instructions.push({
-                        type: 'copy',
-                        source: iter,
-                        destination: path.join(destination, relPath),
-                    });
-                } else if (!ext) {
-                    let otherRelPath = '';
-                    const otherSegments = iter.split(path.sep);
-
-                    if (isMelonLoader) {
-                        otherRelPath = path.join(MELONLOADER_MODS_RELPATH, otherSegments.slice(1).join(path.sep));
-                    }
-                    else if (isBepInEx) {
-                        otherRelPath = path.join(BEPINEX_PLUGINS_RELPATH, otherSegments.slice(1).join(path.sep));
-                    }
-
-                    if (otherRelPath) {
-                        instructions.push({
-                            type: 'copy',
-                            source: iter,
-                            destination: path.join(destination, otherRelPath),
-                        });
-                    }
-                } else if (ext !== '.md') {
-                    let otherRelPath = '';
-                    const otherSegments = iter.split(path.sep);
-
-                    if (isMelonLoader) {
-                        otherRelPath = path.join(MELONLOADER_MODS_RELPATH, otherSegments.slice(1).join(path.sep));
-                    }
-                    else if (isBepInEx) {
-                        otherRelPath = path.join(BEPINEX_PLUGINS_RELPATH, otherSegments.slice(1).join(path.sep));
-                    }
-
-                    if (otherRelPath) {
-                        instructions.push({
-                            type: 'copy',
-                            source: iter,
-                            destination: path.join(destination, otherRelPath),
-                        });
+                        // melon's detection: either plugins or mods
+                        if (isMelonLoaderPlugins) {
+                            dest = path.join(MELONLOADER_PLUGINS_RELPATH, path.basename(iter));
+                        } else {
+                            dest = path.join(MELONLOADER_MODS_RELPATH, path.basename(iter));
+                        }
+                    } else {
+                        // Default fallback for dll: put into mods/
+                        dest = path.join('mods', path.basename(iter));
                     }
                 }
+
+                // Non-dll "other" files: try to place under appropriate mod folder for loader
+                if (!dest && (!ext || ext === '')) {
+                    if (isMelonLoader) {
+                        dest = path.join(MELONLOADER_MODS_RELPATH, ...segments.slice(1));
+                    } else if (isBepInEx) {
+                        dest = path.join(BEPINEX_PLUGINS_RELPATH, ...segments.slice(1));
+                    }
+                }
+
+                // Generic non-md files: place under mods/plugins depending on loader
+                if (!dest && ext !== '.md') {
+                    if (isMelonLoader) {
+                        dest = path.join(MELONLOADER_MODS_RELPATH, ...segments.slice(1));
+                    } else if (isBepInEx) {
+                        dest = path.join(BEPINEX_PLUGINS_RELPATH, ...segments.slice(1));
+                    }
+                }
+
+                // If we still don't have a destination, skip (this was your original behavior)
+                if (!dest) {
+                    continue;
+                }
+
+                // push the copy instruction
+                instructions.push({
+                    type: 'copy',
+                    source: iter,
+                    destination: dest,
+                });
             } catch (e) {
                 api.sendNotification({
                     id: 'schedule1-staterror',
@@ -542,7 +551,7 @@ async function modloaderRequirement(api, discovery) {
     }
 
 }
-    */
+*/
 
 async function importBepinex(api) {
     api.sendNotification({
@@ -558,8 +567,8 @@ async function importBepinex(api) {
             const release = response.data;
             if (release.assets.length > 0) {
                 const chosenAsset = release.assets.find(asset => asset.name.includes('BepInEx_win_x64'));
-                const assetName = chosenAsset.name
-                const assetUrl = chosenAsset.browser_download_url
+                const assetName = chosenAsset.name;
+                const assetUrl = chosenAsset.browser_download_url;
                 const modVersion = release.tag_name;
 
                 const tempPath = path.join(util.getVortexPath('temp'), assetName);
@@ -625,8 +634,8 @@ async function importMelonLoader(api) {
             const release = response.data;
             if (release.assets.length > 0) {
                 const chosenAsset = release.assets.find(asset => asset.name.includes('MelonLoader.x64.zip'));
-                const assetName = chosenAsset.name
-                const assetUrl = chosenAsset.browser_download_url
+                const assetName = chosenAsset.name;
+                const assetUrl = chosenAsset.browser_download_url;
                 const modVersion = release.tag_name;
 
                 const tempPath = path.join(util.getVortexPath('temp'), assetName);
