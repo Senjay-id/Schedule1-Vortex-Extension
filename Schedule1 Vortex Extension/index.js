@@ -15,9 +15,24 @@ const BEPINEX_CONFIG_RELPATH = path.join(BEPINEX_RELPATH, 'config');
 const MELONLOADER_RELPATH = 'MelonLoader';
 const MELONLOADER_PLUGINS_RELPATH = path.join('plugins');
 const MELONLOADER_MODS_RELPATH = path.join('mods');
+const MELONLOADER_USERLIBS_RELPATH = path.join('userlibs');
 const MELONLOADER_CONFIG_RELPATH = path.join('userdata');
 
-const LUA_SCRIPT_RELPATH = path.join('mods', 'schedulelua', 'scripts');
+const LUA_SCRIPT_RELPATH = path.join(MELONLOADER_MODS_RELPATH, 'schedulelua', 'scripts');
+
+const DOC_BASENAMES = new Set([
+    'readme', 'readme.md', 'readme.txt', 'readme.rst',
+    'changelog', 'changelog.md', 'changelog.txt', 'changelog.rst',
+    'changes', 'changes.md', 'changes.txt',
+    'license', 'license.md', 'license.txt', 'license.rtf',
+    'licence', 'licence.md', 'licence.txt',
+    'copying', 'copying.md', 'copying.txt',
+    'notice', 'notice.md', 'notice.txt',
+    'authors', 'authors.md', 'authors.txt',
+    'security.md', 'security.txt',
+    'contributing.md', 'code_of_conduct.md',
+    '.gitignore', '.gitattributes', '.editorconfig',
+]);
 
 function main(context) {
     context.registerGame({
@@ -41,7 +56,7 @@ function main(context) {
         },
     });
 
-    context.registerInstaller('schedule1-luamod', 25, testSupportedScheduleLuaContent, installScheduleLuaMod(context.api));
+    context.registerInstaller('schedule1-scheduleluamod', 25, testSupportedScheduleLuaContent, installScheduleLuaMod(context.api));
     context.registerInstaller('schedule1-luamod', 25, testSupportedLuaContent, installLuaMod(context.api));
     context.registerInstaller('schedule1-s1apimod', 25, testSupportedS1APIContent, installS1APIMod(context.api));
     context.registerInstaller('schedule1-pluginmod', 26, testSupportedPluginContent, installPluginMods(context.api));
@@ -111,19 +126,157 @@ async function testSupportedPluginContent(files, gameId) {
     });
 }
 
+function pathSegments(filePath) {
+    return String(filePath).split(/[/\\]/).filter(seg => seg && seg !== '.');
+}
+
+function shouldSkipFile(filePath) {
+    if (!filePath || /[/\\]$/.test(filePath)) {
+        return true;
+    }
+    const base = path.basename(filePath).toLowerCase();
+    if (DOC_BASENAMES.has(base)) {
+        return true;
+    }
+    if (/^readme(\.|$)/i.test(base)) {
+        return true;
+    }
+    if (/^change[\s._-]*log(\.|$)/i.test(base)) {
+        return true;
+    }
+    if (/^licen[cs]e(\.|$)/i.test(base)) {
+        return true;
+    }
+    return false;
+}
+
 /**
- * Helper: canonicalize destination to expected root + original subpath.
- * Example: if archive has "Mods/MyMod.dll" and idx points to "mods" element,
- * buildDest('mods', ['Mods','MyMod.dll'], idx) => 'mods/MyMod.dll'
+ * Canonical root + remaining archive path after the matched folder.
+ * Returns null when that would produce a destination with no filename
+ * (the old path.join('mods') bug that created a *file* named mods).
  */
 function buildDest(root, segments, idx) {
-    // idx is index of the matched root in segments (lowerSegments index)
-    // we want canonical root + rest of segments after idx
+    if (idx < 0) {
+        return null;
+    }
     const rest = segments.slice(idx + 1);
     if (rest.length === 0) {
-        return path.join(root);
+        return null;
     }
     return path.join(root, ...rest);
+}
+
+function resolvePluginDestination(file, options = {}) {
+    const {
+        isBepInEx = false,
+        isBepInExPatcher = false,
+        isMelonLoaderPlugins = false,
+    } = options;
+
+    if (shouldSkipFile(file)) {
+        return null;
+    }
+
+    const ext = path.extname(file).toLowerCase();
+    const segments = pathSegments(file);
+    if (segments.length === 0) {
+        return null;
+    }
+    const lowerSegments = segments.map(seg => seg.toLowerCase());
+
+    const bepinexIdx = lowerSegments.indexOf('bepinex');
+    const melonloaderIdx = lowerSegments.indexOf('melonloader');
+    const userlibsIdx = lowerSegments.indexOf('userlibs');
+    const userdataIdx = lowerSegments.indexOf('userdata');
+    const modsIdx = lowerSegments.indexOf('mods');
+    const pluginsIdx = lowerSegments.indexOf('plugins');
+    const patchersIdx = lowerSegments.indexOf('patchers');
+    const configIdx = lowerSegments.indexOf('config');
+
+    // UserLibs is a MelonLoader game-root folder, never MelonLoader/UserLibs
+    if (userlibsIdx !== -1) {
+        return buildDest(MELONLOADER_USERLIBS_RELPATH, segments, userlibsIdx);
+    }
+
+    if (userdataIdx !== -1) {
+        return buildDest(MELONLOADER_CONFIG_RELPATH, segments, userdataIdx);
+    }
+
+    if (bepinexIdx !== -1) {
+        if (pluginsIdx > bepinexIdx) {
+            return buildDest(BEPINEX_PLUGINS_RELPATH, segments, pluginsIdx);
+        }
+        if (patchersIdx > bepinexIdx) {
+            return buildDest(BEPINEX_PATCHERS_RELPATH, segments, patchersIdx);
+        }
+        if (configIdx > bepinexIdx) {
+            return buildDest(BEPINEX_CONFIG_RELPATH, segments, configIdx);
+        }
+        return buildDest(BEPINEX_RELPATH, segments, bepinexIdx);
+    }
+
+    if (melonloaderIdx !== -1) {
+        if (modsIdx > melonloaderIdx) {
+            return buildDest(MELONLOADER_MODS_RELPATH, segments, modsIdx);
+        }
+        if (pluginsIdx > melonloaderIdx) {
+            return buildDest(MELONLOADER_PLUGINS_RELPATH, segments, pluginsIdx);
+        }
+        return buildDest(MELONLOADER_RELPATH, segments, melonloaderIdx);
+    }
+
+    if (modsIdx !== -1) {
+        return buildDest(MELONLOADER_MODS_RELPATH, segments, modsIdx);
+    }
+
+    if (pluginsIdx !== -1) {
+        if (isBepInEx) {
+            return buildDest(BEPINEX_PLUGINS_RELPATH, segments, pluginsIdx);
+        }
+        return buildDest(MELONLOADER_PLUGINS_RELPATH, segments, pluginsIdx);
+    }
+
+    if (patchersIdx !== -1) {
+        return buildDest(BEPINEX_PATCHERS_RELPATH, segments, patchersIdx);
+    }
+
+    if (ext === '.dll') {
+        const name = path.basename(file);
+        if (isBepInEx) {
+            return path.join(
+                isBepInExPatcher ? BEPINEX_PATCHERS_RELPATH : BEPINEX_PLUGINS_RELPATH,
+                name
+            );
+        }
+        if (isMelonLoaderPlugins) {
+            return path.join(MELONLOADER_PLUGINS_RELPATH, name);
+        }
+        return path.join(MELONLOADER_MODS_RELPATH, name);
+    }
+
+    return null;
+}
+
+function notifyStatError(api, iter, e) {
+    api.sendNotification({
+        id: 'schedule1-staterror',
+        type: 'error',
+        message: 'Error while reading stats for the mod file',
+        allowSuppress: true,
+        actions: [
+            {
+                title: 'More',
+                action: dismiss => {
+                    api.showDialog('error', 'Error while reading stats for the mod file', {
+                        bbcode: api.translate(`An error has occurred while reading stats for mod file:\n${iter}\n `
+                            + `Error:\n${e}\n\nPlease report this to the extension developer.`)
+                    }, [
+                        { label: 'Close', action: () => api.suppressNotification('schedule1-staterror') }
+                    ]);
+                },
+            },
+        ],
+    });
 }
 
 function installS1APIMod(api) {
@@ -131,48 +284,46 @@ function installS1APIMod(api) {
         const instructions = [];
 
         for (const iter of files) {
+            if (shouldSkipFile(iter)) {
+                continue;
+            }
+
             try {
                 const full = path.join(workingDir, iter);
                 const stats = await fs.statAsync(full);
                 if (stats.isDirectory()) {
-                    continue; // Skip directories
-                }
-
-                const segments = iter.split(path.sep);
-                const lowerSegments = segments.map(seg => seg.toLowerCase());
-                const pluginsIdx = lowerSegments.indexOf('plugins');
-
-                if (pluginsIdx === -1) { // skip the file if the path doesn't have plugins
                     continue;
                 }
 
-                const destination = buildDest('plugins', segments, pluginsIdx);
+                const ext = path.extname(iter).toLowerCase();
+                const segments = pathSegments(iter);
+                const lowerSegments = segments.map(seg => seg.toLowerCase());
+                const pluginsIdx = lowerSegments.indexOf('plugins');
+                const modsIdx = lowerSegments.indexOf('mods');
+                const userlibsIdx = lowerSegments.indexOf('userlibs');
+
+                let destination = null;
+                if (pluginsIdx !== -1) {
+                    destination = buildDest(MELONLOADER_PLUGINS_RELPATH, segments, pluginsIdx);
+                } else if (userlibsIdx !== -1) {
+                    destination = buildDest(MELONLOADER_USERLIBS_RELPATH, segments, userlibsIdx);
+                } else if (modsIdx !== -1) {
+                    destination = buildDest(MELONLOADER_MODS_RELPATH, segments, modsIdx);
+                } else if (ext === '.dll') {
+                    destination = path.join(MELONLOADER_PLUGINS_RELPATH, path.basename(iter));
+                }
+
+                if (!destination) {
+                    continue;
+                }
 
                 instructions.push({
                     type: 'copy',
                     source: iter,
-                    destination: destination,
+                    destination,
                 });
             } catch (e) {
-                api.sendNotification({
-                    id: 'schedule1-staterror',
-                    type: 'error',
-                    message: 'Error while reading stats for the mod file',
-                    allowSuppress: true,
-                    actions: [
-                        {
-                            title: 'More',
-                            action: dismiss => {
-                                api.showDialog('error', 'Error while reading stats for the mod file', {
-                                    bbcode: api.translate(`An error has occurred while reading stats for mod file:\n${iter}\n `
-                                        + `Error:\n${e}\n\nPlease report this to the extension developer.`)
-                                }, [
-                                    { label: 'Close', action: () => api.suppressNotification('schedule1-staterror') }
-                                ]);
-                            },
-                        },
-                    ],
-                });
+                notifyStatError(api, iter, e);
             }
         }
         return { instructions };
@@ -188,7 +339,7 @@ function installLuaMod(api) {
                 const full = path.join(workingDir, iter);
                 const stats = await fs.statAsync(full);
                 if (stats.isDirectory()) {
-                    continue; // Skip directories
+                    continue;
                 }
 
                 const isLuaFile = path.extname(iter).toLowerCase() === '.lua';
@@ -203,25 +354,7 @@ function installLuaMod(api) {
                     destination: path.join(LUA_SCRIPT_RELPATH, filename),
                 });
             } catch (e) {
-                api.sendNotification({
-                    id: 'schedule1-staterror',
-                    type: 'error',
-                    message: 'Error while reading stats for the mod file',
-                    allowSuppress: true,
-                    actions: [
-                        {
-                            title: 'More',
-                            action: dismiss => {
-                                api.showDialog('error', 'Error while reading stats for the mod file', {
-                                    bbcode: api.translate(`An error has occurred while reading stats for mod file:\n${iter}\n `
-                                        + `Error:\n${e}\n\nPlease report this to the extension developer.`)
-                                }, [
-                                    { label: 'Close', action: () => api.suppressNotification('schedule1-staterror') }
-                                ]);
-                            },
-                        },
-                    ],
-                });
+                notifyStatError(api, iter, e);
             }
         }
         return { instructions };
@@ -233,57 +366,49 @@ function installScheduleLuaMod(api) {
         const instructions = [];
 
         for (const iter of files) {
+            if (shouldSkipFile(iter)) {
+                continue;
+            }
+
             try {
                 const full = path.join(workingDir, iter);
                 const stats = await fs.statAsync(full);
                 if (stats.isDirectory()) {
-                    continue; // Skip directories
-                }
-
-                const segments = iter.split(path.sep);
-                const lowerSegments = segments.map(seg => seg.toLowerCase());
-                const modsIdx = lowerSegments.indexOf('mods');
-                const userlibsIdx = lowerSegments.indexOf('userlibs');
-
-                // Skip if the file is in the root (no 'mods' or 'userlibs' in path)
-                if (modsIdx === -1 && userlibsIdx === -1) {
                     continue;
                 }
 
-                let destination;
-                if (modsIdx !== -1) {
-                    // Force canonical 'mods' root (lowercase) + rest of the path
-                    destination = buildDest('mods', segments, modsIdx);
-                } else {
-                    // userlibs -> map to 'userdata' (canonical for melon's userdata folder)
-                    destination = buildDest('userdata', segments, userlibsIdx);
+                const ext = path.extname(iter).toLowerCase();
+                const segments = pathSegments(iter);
+                const lowerSegments = segments.map(seg => seg.toLowerCase());
+                const modsIdx = lowerSegments.indexOf('mods');
+                const userlibsIdx = lowerSegments.indexOf('userlibs');
+                const userdataIdx = lowerSegments.indexOf('userdata');
+                const pluginsIdx = lowerSegments.indexOf('plugins');
+
+                let destination = null;
+                if (userlibsIdx !== -1) {
+                    destination = buildDest(MELONLOADER_USERLIBS_RELPATH, segments, userlibsIdx);
+                } else if (userdataIdx !== -1) {
+                    destination = buildDest(MELONLOADER_CONFIG_RELPATH, segments, userdataIdx);
+                } else if (modsIdx !== -1) {
+                    destination = buildDest(MELONLOADER_MODS_RELPATH, segments, modsIdx);
+                } else if (pluginsIdx !== -1) {
+                    destination = buildDest(MELONLOADER_PLUGINS_RELPATH, segments, pluginsIdx);
+                } else if (ext === '.dll') {
+                    destination = path.join(MELONLOADER_MODS_RELPATH, path.basename(iter));
+                }
+
+                if (!destination) {
+                    continue;
                 }
 
                 instructions.push({
                     type: 'copy',
                     source: iter,
-                    destination: destination,
+                    destination,
                 });
             } catch (e) {
-                api.sendNotification({
-                    id: 'schedule1-staterror',
-                    type: 'error',
-                    message: 'Error while reading stats for the mod file',
-                    allowSuppress: true,
-                    actions: [
-                        {
-                            title: 'More',
-                            action: dismiss => {
-                                api.showDialog('error', 'Error while reading stats for the mod file', {
-                                    bbcode: api.translate(`An error has occurred while reading stats for mod file:\n${iter}\n `
-                                        + `Error:\n${e}\n\nPlease report this to the extension developer.`)
-                                }, [
-                                    { label: 'Close', action: () => api.suppressNotification('schedule1-staterror') }
-                                ]);
-                            },
-                        },
-                    ],
-                });
+                notifyStatError(api, iter, e);
             }
         }
         return { instructions };
@@ -292,7 +417,6 @@ function installScheduleLuaMod(api) {
 
 function installPluginMods(api) {
     return async (files, workingDir, gameId, progressDel, choices, unattended, archivePath) => {
-        let destination = "";
         let isBepInEx = false;
         let isBepInExPatcher = false;
         let isMelonLoader = false;
@@ -301,7 +425,6 @@ function installPluginMods(api) {
         const state = api.getState();
         const discovery = selectors.discoveryByGame(state, GAME_ID);
 
-        // First pass: detect plugin types by reading DLL contents (same as before)
         await Promise.all(files.map(async file => {
             if (path.extname(file).toLowerCase() === '.dll') {
                 try {
@@ -319,7 +442,6 @@ function installPluginMods(api) {
             }
         }));
 
-        // Check if the user has bepinex installed
         if (isBepInEx) {
             try {
                 await fs.statAsync(path.join(discovery.path, BEPINEX_RELPATH, 'core', 'BepInEx.dll'));
@@ -338,10 +460,9 @@ function installPluginMods(api) {
             }
         }
 
-        // Check if the user has melonloader installed
         if (isMelonLoader) {
             try {
-                await fs.statAsync(path.join(discovery.path, 'MelonLoader', 'net6', 'MelonLoader.dll'));
+                await fs.statAsync(path.join(discovery.path, MELONLOADER_RELPATH, 'net6', 'MelonLoader.dll'));
             } catch (err) {
                 const missingMelonLoader = await api.showDialog('info', 'Trying to install a MelonLoader plugin', {
                     bbcode: api.translate('Vortex has detected that you are trying to install a MelonLoader plugin without having MelonLoader installed.[br][/br][br][/br]'
@@ -362,7 +483,6 @@ function installPluginMods(api) {
             }
         }
 
-        // If both detected, bail out (same behavior you had)
         if (isBepInEx && isMelonLoader) {
             const mixedModHandling = await api.showDialog('error', 'Mixed mod detected', {
                 bbcode: api.translate('Vortex has detected that the mod package has bepinex and melonloader mod on the archive.[br][/br][br][/br]'
@@ -376,9 +496,12 @@ function installPluginMods(api) {
             }
         }
 
-        // Second pass: build instructions with case-insensitive detection and canonical destinations
         const instructions = [];
         for (const iter of files) {
+            if (shouldSkipFile(iter)) {
+                continue;
+            }
+
             try {
                 const full = path.join(workingDir, iter);
                 const stats = await fs.statAsync(full);
@@ -386,21 +509,10 @@ function installPluginMods(api) {
                     continue;
                 }
 
-                const ext = path.extname(iter).toLowerCase();
-                const segments = iter.split(path.sep);
+                const segments = pathSegments(iter);
                 const lowerSegments = segments.map(seg => seg.toLowerCase());
-
                 const bepinexIdx = lowerSegments.indexOf('bepinex');
-                const bepinexConfigIdx = lowerSegments.indexOf('config');
-                const bepinexPluginsIdx = lowerSegments.indexOf('plugins');
-                const bepinexPatchersIdx = lowerSegments.indexOf('patchers');
                 const melonloaderIdx = lowerSegments.indexOf('melonloader');
-                const melonloaderUserLibsIdx = lowerSegments.indexOf('userlibs');
-                const melonloaderConfigIdx = lowerSegments.indexOf('userdata');
-                const pluginsIdx = lowerSegments.indexOf('plugins');
-                const modsIdx = lowerSegments.indexOf('mods');
-
-                // Variant detection: record the prefix before the variant root (as before)
                 if (bepinexIdx !== -1) {
                     variantSet.add(segments.slice(0, bepinexIdx).join(path.sep));
                 }
@@ -408,112 +520,22 @@ function installPluginMods(api) {
                     variantSet.add(segments.slice(0, melonloaderIdx).join(path.sep));
                 }
 
-                // Priority mapping:
-                let dest = null;
-
-                // Explicit bepinex plugin/patcher/config cases first
-                if (bepinexPluginsIdx !== -1) {
-                    dest = path.join(BEPINEX_RELPATH, 'plugins', ...segments.slice(bepinexPluginsIdx + 1));
-                } else if (bepinexPatchersIdx !== -1) {
-                    dest = path.join(BEPINEX_RELPATH, 'patchers', ...segments.slice(bepinexPatchersIdx + 1));
-                } else if (bepinexConfigIdx !== -1 && bepinexIdx !== -1 && bepinexConfigIdx > bepinexIdx) {
-                    // e.g. .../BepInEx/config/...
-                    dest = path.join(BEPINEX_RELPATH, 'config', ...segments.slice(bepinexConfigIdx + 1));
-                } else if (bepinexIdx !== -1) {
-                    // any other file under a BepInEx root
-                    dest = path.join(BEPINEX_RELPATH, ...segments.slice(bepinexIdx + 1));
-                }
-                // MelonLoader specific
-                else if (melonloaderUserLibsIdx !== -1) {
-                    // If archive contains 'userlibs', put under MelonLoader/<rest>
-                    dest = path.join(MELONLOADER_RELPATH, ...segments.slice(melonloaderUserLibsIdx + 1));
-                } else if (melonloaderConfigIdx !== -1) {
-                    // userdata -> canonical userdata folder
-                    dest = path.join(MELONLOADER_CONFIG_RELPATH, ...segments.slice(melonloaderConfigIdx + 1));
-                } else if (melonloaderIdx !== -1) {
-                    dest = path.join(MELONLOADER_RELPATH, ...segments.slice(melonloaderIdx + 1));
-                }
-                // Generic plugins/mods detection (non-bepinex/melonloader)
-                else if (pluginsIdx !== -1) {
-                    dest = buildDest('plugins', segments, pluginsIdx);
-                } else if (modsIdx !== -1) {
-                    dest = buildDest('mods', segments, modsIdx);
-                }
-
-                // If still no dest, handle DLLs specially based on detected loader
-                if (!dest && ext === '.dll') {
-                    if (isBepInEx) {
-                        // put in bepinex plugins/patchers depending on detection
-                        if (isBepInExPatcher) {
-                            // keep last two path parts if present (folder + dll)
-                            const dllSegments = segments.slice(-2);
-                            dest = path.join(BEPINEX_PATCHERS_RELPATH, ...dllSegments);
-                        } else {
-                            const dllSegments = segments.slice(-2);
-                            dest = path.join(BEPINEX_PLUGINS_RELPATH, ...dllSegments);
-                        }
-                    } else if (isMelonLoader) {
-                        // melon's detection: either plugins or mods
-                        if (isMelonLoaderPlugins) {
-                            dest = path.join(MELONLOADER_PLUGINS_RELPATH, path.basename(iter));
-                        } else {
-                            dest = path.join(MELONLOADER_MODS_RELPATH, path.basename(iter));
-                        }
-                    } else {
-                        // Default fallback for dll: put into mods/
-                        dest = path.join('mods', path.basename(iter));
-                    }
-                }
-
-                // Non-dll "other" files: try to place under appropriate mod folder for loader
-                if (!dest && (!ext || ext === '')) {
-                    if (isMelonLoader) {
-                        dest = path.join(MELONLOADER_MODS_RELPATH, ...segments.slice(1));
-                    } else if (isBepInEx) {
-                        dest = path.join(BEPINEX_PLUGINS_RELPATH, ...segments.slice(1));
-                    }
-                }
-
-                // Generic non-md files: place under mods/plugins depending on loader
-                if (!dest && ext !== '.md') {
-                    if (isMelonLoader) {
-                        dest = path.join(MELONLOADER_MODS_RELPATH, ...segments.slice(1));
-                    } else if (isBepInEx) {
-                        dest = path.join(BEPINEX_PLUGINS_RELPATH, ...segments.slice(1));
-                    }
-                }
-
-                // If we still don't have a destination, skip (this was your original behavior)
+                const dest = resolvePluginDestination(iter, {
+                    isBepInEx,
+                    isBepInExPatcher,
+                    isMelonLoaderPlugins,
+                });
                 if (!dest) {
                     continue;
                 }
 
-                // push the copy instruction
                 instructions.push({
                     type: 'copy',
                     source: iter,
                     destination: dest,
                 });
             } catch (e) {
-                api.sendNotification({
-                    id: 'schedule1-staterror',
-                    type: 'error',
-                    message: 'Error while reading stats for the mod file',
-                    allowSuppress: true,
-                    actions: [
-                        {
-                            title: 'More',
-                            action: dismiss => {
-                                api.showDialog('error', 'Error while reading stats for the mod file', {
-                                    bbcode: api.translate(`An error has occurred while reading stats for mod file:\n${iter}\n `
-                                        + `Error:\n${e}\n\nPlease report this to the extension developer.`)
-                                }, [
-                                    { label: 'Close', action: () => api.suppressNotification('schedule1-staterror') }
-                                ]);
-                            },
-                        },
-                    ],
-                });
+                notifyStatError(api, iter, e);
             }
         }
 
@@ -539,19 +561,6 @@ function installPluginMods(api) {
         return { instructions };
     };
 }
-
-/*
-async function modloaderRequirement(api, discovery) {
-
-    try {
-        
-    } catch (err) {
-
-
-    }
-
-}
-*/
 
 async function importBepinex(api) {
     api.sendNotification({
@@ -696,11 +705,13 @@ async function prepareForModding(api, discovery) {
     const modPaths = [
         path.join(discovery.path, BEPINEX_RELPATH),
         path.join(discovery.path, MELONLOADER_RELPATH),
-        path.join(discovery.path, "MelonLoader"),
+        path.join(discovery.path, MELONLOADER_MODS_RELPATH),
+        path.join(discovery.path, MELONLOADER_PLUGINS_RELPATH),
+        path.join(discovery.path, MELONLOADER_USERLIBS_RELPATH),
+        path.join(discovery.path, MELONLOADER_CONFIG_RELPATH),
     ];
     try {
         await Promise.all(modPaths.map((m) => fs.ensureDirWritableAsync(m)));
-        //await modloaderRequirement(api, discovery);
         return Promise.resolve();
     } catch (err) {
         log('error', 'Failed to prepare for modding', err);
